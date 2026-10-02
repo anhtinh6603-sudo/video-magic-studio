@@ -1,9 +1,11 @@
 # Giao diện ứng dụng chỉnh video Clips
 
 ## Mục tiêu
+
 Dựng màn hình chính bám sát ảnh tham chiếu: nền đen, điểm nhấn vàng, bố cục rộng và dày tính năng; ảnh tham chiếu chỉ dùng để định hướng, không nhúng trực tiếp.
 
 ## Nội dung thực hiện
+
 - Tạo thanh trên cùng với logo Clips, đường dẫn sản phẩm, giá, dự án, âm thanh và đăng nhập.
 - Tạo thanh điều hướng trái thu gọn với trạng thái Trang chủ đang chọn.
 - Tạo khu nhập nội dung trung tâm gồm ô dán liên kết YouTube/Drive, nút lấy video, kéo-thả/tải tệp và nhóm loại nội dung.
@@ -14,6 +16,7 @@ Dựng màn hình chính bám sát ảnh tham chiếu: nền đen, điểm nhấ
 - Điều chỉnh giao diện cho cả màn hình rộng và điện thoại, giữ đúng mật độ và tỷ lệ của ảnh tham chiếu.
 
 ## Kỹ thuật
+
 - Dùng React/TanStack hiện có và Tailwind CSS v4.
 - Màu sắc, bóng, font và kích thước được định nghĩa bằng hệ thống biến giao diện chung.
 - Dùng ảnh tạo mới trong `src/assets`; các vị trí media còn thiếu dùng khung trạng thái rõ ràng để bổ sung sau.
