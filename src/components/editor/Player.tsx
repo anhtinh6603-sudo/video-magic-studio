@@ -1,6 +1,6 @@
 import { Pause, Play, RotateCcw, RotateCw, Volume2, VolumeX } from "lucide-react";
 
-import { formatTime, formatTimeMs, type Aspect, type Caption } from "@/lib/projects";
+import { formatTime, formatTimeMs, type Aspect, type Caption, type Hook } from "@/lib/projects";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -16,6 +16,7 @@ interface PlayerProps {
   player: PlayerApi;
   aspect: Aspect;
   captions: Caption[];
+  hook?: Hook | undefined;
   previewMuted: boolean;
   onTogglePreviewMute: () => void;
 }
@@ -24,6 +25,7 @@ export function Player({
   player,
   aspect,
   captions,
+  hook,
   previewMuted,
   onTogglePreviewMute,
 }: PlayerProps) {
@@ -46,6 +48,13 @@ export function Player({
             preload="auto"
             className="absolute inset-0 h-full w-full object-cover"
           />
+          {hook && hook.text.trim() && time < hook.duration && (
+            <div className="pointer-events-none absolute inset-x-[6%] top-[14%] flex justify-center">
+              <span className="rounded-md bg-[#f5c518] px-3 py-1.5 text-center font-display text-base font-extrabold uppercase leading-tight text-[#111]">
+                {hook.text}
+              </span>
+            </div>
+          )}
           {active.length > 0 && (
             <div className="pointer-events-none absolute inset-x-0 bottom-[8%] flex flex-col items-center gap-1 px-4">
               {active.map((cap) => (

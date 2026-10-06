@@ -18,3 +18,24 @@
 - [x] Xuất video thật bằng canvas + MediaRecorder (9:16 / 16:9 / 1:1, 2 mức chất lượng), tải file về máy.
 - [x] Tự động lưu dự án, đánh dấu "đã xuất", xóa dự án kèm file.
 - [x] TypeScript strict + ESLint sạch, build Vercel (`vercel-build`) thành công.
+
+# Bổ sung tính năng (06/10/2026)
+
+- [x] AI chấm điểm & đề xuất đoạn hay: quét âm thanh, chấm theo mật độ lời nói / độ lớn / cảm xúc, cắt đúng chỗ ngắt câu.
+- [x] Xuất "mỗi clip thành 1 short" (nhiều file) bên cạnh "ghép cả timeline thành 1 video".
+- [x] Hook mở đầu: câu hook khung vàng ở đầu video, xem trước và đốt vào video khi xuất.
+- [x] Nhạc nền: thư viện nhạc (IndexedDB), nghe thử, trộn vào bản xem trước và bản xuất, chỉnh âm lượng.
+- [x] Đồng bộ nhịp nhạc: dò BPM, cắt tròn độ dài clip theo số phách.
+- [x] Caption: nhập file SRT/VTT, xuất SRT.
+- [x] Thêm nhiều video vào một dự án; chế độ "Nhiều clip + Nhạc" nhận nhiều file cùng lúc.
+- [x] Trang chủ: chế độ tạo áp dụng thật, ảnh bìa dự án, gắn sao lưu vĩnh viễn, chọn nhiều để xóa, xem tất cả.
+- [x] Hộp thoại Giá cả, Thư viện âm thanh, Hồ sơ trên máy, Phản hồi và menu di động.
+- [x] Xuất video không bị treo khi tab bị ẩn/cửa sổ bị che (hẹn giờ dự phòng cho requestAnimationFrame).
+- [x] Sửa `scripts/prerender-index.mjs` chạy được trên Windows; `vercel.json` để mở lại trang `/editor/...` không bị 404.
+
+# Còn lại
+
+- [ ] Video mẫu dùng đường dẫn asset của Lovable (`/__l5e/...`) nên chỉ chạy trên hosting Lovable — cần thay bằng file thật khi deploy nơi khác.
+- [ ] Nhận dạng giọng nói → caption tự động, tách nền / xóa vật thể, slide đồ họa AI (cần API AI + server).
+- [ ] Nhập trực tiếp từ YouTube / Google Drive (cần server tải video).
+- [ ] Đăng nhập online & lưu dự án trên đám mây.

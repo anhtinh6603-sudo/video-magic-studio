@@ -4,13 +4,13 @@
 // Run AFTER `vite build`:  node scripts/prerender-index.mjs
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const workerPath = join(root, ".output", "server", "index.mjs");
 const outPath = join(root, ".output", "public", "index.html");
 
-const mod = await import(workerPath);
+const mod = await import(pathToFileURL(workerPath).href);
 const req = new Request("http://localhost/", { headers: { host: "localhost" } });
 const res = await mod.default.fetch(req, {}, { waitUntil() {} });
 if (!res.ok) {

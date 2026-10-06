@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ArrowLeft, Check, Download, Loader2, X } from "lucide-react";
+import { ArrowLeft, Check, Download, Loader2, Upload, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,9 +14,21 @@ import {
   ToolsPanel,
   useSideTabState,
 } from "@/components/editor/SidePanels";
+import { MusicHookPanel } from "@/components/editor/MusicHookPanel";
 import { Timeline } from "@/components/editor/Timeline";
 import { usePlayer } from "@/components/editor/usePlayer";
 import {
+  analyzeEnvelope,
+  captionsToSrt,
+  downloadBlob,
+  estimateBpm,
+  getMusicBlob,
+  parseSubtitles,
+  suggestHighlights,
+  type Envelope,
+} from "@/lib/audio";
+import {
+  addFilesToProject,
   clipLayout,
   getProject,
   getSourceBlob,
@@ -87,7 +99,15 @@ function EditorApp() {
 
   const [exportOpen, setExportOpen] = useState(false);
   const [quality, setQuality] = useState<"cao" | "trung-binh">("cao");
+  const [exportMode, setExportMode] = useState<"merge" | "separate">("merge");
+  const [exportLabel, setExportLabel] = useState("");
   const abortRef = useRef<AbortController | null>(null);
+
+  const [highlightCount, setHighlightCount] = useState(5);
+  const envelopes = useRef(new Map<string, Envelope>());
+  const [musicUrl, setMusicUrl] = useState<string | null>(null);
+  const [bpm, setBpm] = useState<number | null>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
 
   const player = usePlayer(project?.clips ?? EMPTY_CLIPS, sourceUrls, { previewMuted });
 
@@ -122,6 +142,8 @@ function EditorApp() {
         setProject(next);
         setSourceUrls(urls);
         setSelectedClipId(next.clips[0]?.id ?? null);
+        if (next.mode === "Video dài → Short") setTab("tools");
+        if (next.mode === "Nhiều clip + Nhạc") setTab("music");
         saveProject(next);
         setHydrated(true);
         setLoadState("ready");
@@ -135,7 +157,54 @@ function EditorApp() {
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ---- background music ---------------------------------------------------
+  const musicTrackId = project?.music?.trackId ?? null;
+  useEffect(() => {
+    setBpm(null);
+    setMusicUrl(null);
+    if (!musicTrackId) return;
+    let cancelled = false;
+    let url: string | null = null;
+    getMusicBlob(musicTrackId)
+      .then(async (blob) => {
+        if (cancelled) return;
+        if (!blob) {
+          toast.error("Không tìm thấy file nhạc trong thư viện.");
+          return;
+        }
+        url = URL.createObjectURL(blob);
+        setMusicUrl(url);
+        const env = await analyzeEnvelope(blob);
+        if (!cancelled) setBpm(estimateBpm(env));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [musicTrackId]);
+
+  // Phát nhạc nền cùng bản xem trước.
+  const musicVolume = project?.music?.volume ?? 0;
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (audio) audio.volume = Math.min(1, Math.max(0, previewMuted ? 0 : musicVolume));
+  }, [musicVolume, previewMuted, musicUrl]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !musicUrl) return;
+    if (!player.playing) {
+      audio.pause();
+      return;
+    }
+    const length = audio.duration;
+    const target = Number.isFinite(length) && length > 0 ? player.time % length : player.time;
+    if (Math.abs(audio.currentTime - target) > 0.35) audio.currentTime = target;
+    if (audio.paused) audio.play().catch(() => undefined);
+  }, [player.playing, player.time, musicUrl]);
 
   // ---- autosave -----------------------------------------------------------
   useEffect(() => {
@@ -314,6 +383,96 @@ function EditorApp() {
     toast.success(`Đã chia thành ${parts.length} short.`);
   };
 
+  const getEnvelope = async (sourceId: string) => {
+    const cached = envelopes.current.get(sourceId);
+    if (cached) return cached;
+    const source = project?.sources.find((s) => s.id === sourceId);
+    if (!source) throw new Error("Không tìm thấy video nguồn.");
+    const env = await analyzeEnvelope(await getSourceBlob(source));
+    envelopes.current.set(sourceId, env);
+    return env;
+  };
+
+  const suggestBest = async () => {
+    if (!project || !selectedClip || busy) return;
+    setBusy("highlight");
+    try {
+      const env = await getEnvelope(selectedClip.sourceId);
+      const found = suggestHighlights(env, {
+        from: selectedClip.start,
+        to: selectedClip.end,
+        targetLength: shortLen * selectedClip.speed,
+        count: highlightCount,
+        thresholdDb,
+      });
+      if (found.length === 0) {
+        toast.info("Không tìm thấy đoạn phù hợp trong clip này.");
+        return;
+      }
+      const fresh: Clip[] = found.map((h, i) => ({
+        ...selectedClip,
+        id: uid(),
+        name: `Short ${i + 1} · ${h.score}đ`,
+        start: h.start,
+        end: h.end,
+      }));
+      const id = selectedClip.id;
+      update((p) => {
+        const i = p.clips.findIndex((c) => c.id === id);
+        const clips = [...p.clips];
+        clips.splice(i, 1, ...fresh);
+        return { ...p, clips };
+      });
+      setSelectedClipId(fresh[0]?.id ?? null);
+      toast.success(`AI đã chọn ${fresh.length} đoạn hay nhất — điểm nằm trong tên mỗi clip.`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Không phân tích được âm thanh.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const beatSync = () => {
+    if (!bpm || !project) return;
+    const beat = 60 / bpm;
+    update((p) => ({
+      ...p,
+      clips: p.clips.map((c) => {
+        const dur = (c.end - c.start) / c.speed;
+        const beats = Math.max(1, Math.round(dur / beat));
+        return { ...c, end: Math.min(c.end, c.start + beats * beat * c.speed) };
+      }),
+    }));
+    toast.success(`Đã khớp ${project.clips.length} clip theo nhịp ${bpm} BPM.`);
+  };
+
+  const importSrt = async (file: File) => {
+    const parsed = parseSubtitles(await file.text());
+    if (parsed.length === 0) {
+      toast.error("Không đọc được phụ đề trong file này.");
+      return;
+    }
+    update((p) => ({ ...p, captions: parsed }));
+    toast.success(`Đã nhập ${parsed.length} dòng phụ đề.`);
+  };
+
+  const addVideos = async (files: File[]) => {
+    if (!project || files.length === 0 || busy) return;
+    setBusy("import");
+    try {
+      const next = await addFilesToProject(project, files);
+      const urls = new Map(sourceUrls);
+      for (const s of next.sources) if (!urls.has(s.id)) urls.set(s.id, await resolveSourceUrl(s));
+      setSourceUrls(urls);
+      setProject(next);
+      toast.success(`Đã thêm ${files.length} video vào cuối timeline.`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Không thêm được video.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   // ---- export -------------------------------------------------------------
   const doExport = async () => {
     if (!project || busy) return;
@@ -322,32 +481,53 @@ function EditorApp() {
     setBusy("export");
     setProgress(0);
     try {
-      const blob = await exportTimeline({
-        clips: project.clips,
-        sources: sourceUrls,
-        captions: project.captions,
-        aspect: project.aspect,
-        videoBitsPerSecond: quality === "cao" ? 12_000_000 : 6_000_000,
-        onProgress: setProgress,
-        signal: ctrl.signal,
-      });
-      const ext = blob.type.includes("mp4") ? "mp4" : "webm";
-      const a = document.createElement("a");
-      const url = URL.createObjectURL(blob);
-      a.href = url;
-      a.download = `${project.title.replace(/[\\/:*?"<>|]/g, "").trim() || "master-clip"}.${ext}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      const musicBlob = project.music ? await getMusicBlob(project.music.trackId) : undefined;
+      const music =
+        musicBlob && project.music ? { blob: musicBlob, volume: project.music.volume } : undefined;
+      const safe = (name: string) => name.replace(/[\\/:*?"<>|]/g, "").trim();
+      const baseName = safe(project.title) || "master-clip";
+      // Gộp cả timeline thành 1 video, hoặc mỗi clip thành 1 short riêng
+      // (caption được dời mốc thời gian theo vị trí của clip trên timeline).
+      const jobs =
+        exportMode === "merge"
+          ? [{ name: baseName, clips: project.clips, captions: project.captions }]
+          : layout.map(({ clip, offset, dur }) => ({
+              name: `${baseName} - ${safe(clip.name)}`,
+              clips: [clip],
+              captions: project.captions
+                .filter((c) => c.end > offset && c.start < offset + dur)
+                .map((c) => ({ ...c, start: Math.max(0, c.start - offset), end: c.end - offset })),
+            }));
+      for (const [index, job] of jobs.entries()) {
+        setExportLabel(jobs.length > 1 ? `Short ${index + 1}/${jobs.length}` : "");
+        setProgress(0);
+        const blob = await exportTimeline({
+          clips: job.clips,
+          sources: sourceUrls,
+          captions: job.captions,
+          aspect: project.aspect,
+          videoBitsPerSecond: quality === "cao" ? 12_000_000 : 6_000_000,
+          hook: project.hook,
+          music,
+          onProgress: setProgress,
+          signal: ctrl.signal,
+        });
+        const ext = blob.type.includes("mp4") ? "mp4" : "webm";
+        downloadBlob(blob, `${job.name}.${ext}`);
+      }
       update((p) => ({ ...p, exportedAt: Date.now() }));
-      toast.success("Xuất video thành công — file đang tải xuống.");
+      toast.success(
+        jobs.length > 1
+          ? `Đã xuất ${jobs.length} short — các file đang tải xuống.`
+          : "Xuất video thành công — file đang tải xuống.",
+      );
       setExportOpen(false);
     } catch (e) {
       if (e instanceof Error && /hủy/i.test(e.message)) toast.info("Đã hủy xuất video.");
       else toast.error(e instanceof Error ? e.message : "Xuất video thất bại.");
     } finally {
       setBusy(null);
+      setExportLabel("");
       abortRef.current = null;
     }
   };
@@ -404,6 +584,30 @@ function EditorApp() {
             </span>
           )}
           <div className="ml-auto flex items-center gap-2">
+            <label
+              className={cn(
+                "hidden h-8 cursor-pointer items-center gap-1.5 rounded-md border border-dashed border-border px-3 text-xs font-semibold text-muted-foreground hover:border-brand/60 hover:text-foreground md:inline-flex",
+                busy && "pointer-events-none opacity-50",
+              )}
+            >
+              {busy === "import" ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Upload className="size-3.5" />
+              )}
+              Thêm video
+              <input
+                type="file"
+                accept="video/*"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? []);
+                  e.target.value = "";
+                  void addVideos(files);
+                }}
+              />
+            </label>
             <div className="hidden items-center gap-1 rounded-lg border border-border bg-panel p-1 sm:flex">
               {ASPECTS.map((a) => (
                 <button
@@ -441,6 +645,7 @@ function EditorApp() {
               player={player}
               aspect={project.aspect}
               captions={project.captions}
+              hook={project.hook}
               previewMuted={previewMuted}
               onTogglePreviewMute={() => setPreviewMuted((v) => !v)}
             />
@@ -483,6 +688,39 @@ function EditorApp() {
                 onAdd={addCaption}
                 onChange={updateCaption}
                 onDelete={deleteCaption}
+                onImportSrt={(file) => void importSrt(file)}
+                onExportSrt={() =>
+                  downloadBlob(
+                    new Blob([captionsToSrt(project.captions)], {
+                      type: "text/plain;charset=utf-8",
+                    }),
+                    `${project.title || "phu-de"}.srt`,
+                  )
+                }
+              />
+            )}
+            {tab === "music" && (
+              <MusicHookPanel
+                hook={project.hook}
+                onHook={(hook) =>
+                  update((p) => {
+                    const { hook: _old, ...rest } = p;
+                    return hook ? { ...rest, hook } : rest;
+                  })
+                }
+                music={project.music}
+                onMusic={(music) =>
+                  update((p) => {
+                    const { music: _old, ...rest } = p;
+                    return music ? { ...rest, music } : rest;
+                  })
+                }
+                bpm={bpm}
+                onBeatSync={beatSync}
+                onPreviewHook={() => {
+                  player.seek(0);
+                  player.play();
+                }}
               />
             )}
             {tab === "tools" && (
@@ -500,11 +738,16 @@ function EditorApp() {
                 onCutSilence={cutSilence}
                 onSplitShorts={splitShorts}
                 onExport={() => setExportOpen(true)}
+                highlightCount={highlightCount}
+                onHighlightCount={setHighlightCount}
+                onSuggestHighlights={() => void suggestBest()}
               />
             )}
           </div>
         </div>
       </main>
+
+      {musicUrl && <audio ref={audioRef} src={musicUrl} loop preload="auto" className="hidden" />}
 
       {exportOpen && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4">
@@ -524,9 +767,40 @@ function EditorApp() {
               </Button>
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">
-              Render toàn bộ timeline ({project.aspect}) ngay trên máy của bạn — không tải lên
-              server.
+              Render ({project.aspect}) ngay trên máy của bạn — không tải lên server. Caption, hook
+              và nhạc nền được đốt thẳng vào video.
             </p>
+            <div className="mt-4">
+              <span className="text-[11px] font-semibold">Kiểu xuất</span>
+              <div className="mt-1.5 grid grid-cols-2 gap-2">
+                {(
+                  [
+                    { id: "merge", label: "1 video", sub: "Ghép cả timeline" },
+                    {
+                      id: "separate",
+                      label: `${project.clips.length} short`,
+                      sub: "Mỗi clip thành 1 file",
+                    },
+                  ] as const
+                ).map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    disabled={busy === "export"}
+                    onClick={() => setExportMode(m.id)}
+                    className={cn(
+                      "rounded-lg border p-2.5 text-left transition-colors",
+                      exportMode === m.id
+                        ? "border-brand bg-brand/10"
+                        : "border-border hover:border-brand/50",
+                    )}
+                  >
+                    <span className="block text-[12px] font-bold">{m.label}</span>
+                    <span className="block text-[10px] text-muted-foreground">{m.sub}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="mt-4">
               <span className="text-[11px] font-semibold">Chất lượng</span>
               <div className="mt-1.5 grid grid-cols-2 gap-2">
@@ -558,7 +832,10 @@ function EditorApp() {
               <div className="mt-4">
                 <Progress value={Math.round(progress * 100)} className="h-2" />
                 <p className="mt-2 text-center font-mono text-[11px] text-brand">
-                  Đang render… {Math.round(progress * 100)}%
+                  {exportLabel ? `${exportLabel} · ` : ""}Đang render… {Math.round(progress * 100)}%
+                </p>
+                <p className="mt-1 text-center text-[10px] text-muted-foreground">
+                  Video được dựng theo thời gian thực — hãy giữ tab này mở.
                 </p>
               </div>
             )}

@@ -38,6 +38,28 @@ export interface Caption {
   text: string;
 }
 
+export type CreateMode = "Talking-head" | "Nhiều clip + Nhạc" | "Video dài → Short";
+
+export const CREATE_MODES: CreateMode[] = [
+  "Talking-head",
+  "Nhiều clip + Nhạc",
+  "Video dài → Short",
+];
+
+/** Câu hook hiện nổi bật ở đầu video. */
+export interface Hook {
+  text: string;
+  /** Số giây hiển thị tính từ đầu video. */
+  duration: number;
+}
+
+/** Nhạc nền lấy từ thư viện nhạc (xem audio.ts). */
+export interface ProjectMusic {
+  trackId: string;
+  name: string;
+  volume: number;
+}
+
 export interface Project {
   id: string;
   title: string;
@@ -47,6 +69,12 @@ export interface Project {
   exportedAt?: number;
   aspect: Aspect;
   workflow?: string;
+  mode?: CreateMode;
+  favorite?: boolean;
+  /** Ảnh bìa nhỏ (data URL JPEG). */
+  thumbnail?: string;
+  hook?: Hook;
+  music?: ProjectMusic;
   sources: SourceRef[];
   clips: Clip[];
   captions: Caption[];
@@ -132,45 +160,120 @@ function probeDuration(src: string): Promise<number> {
   });
 }
 
-export async function createProjectFromFile(file: File, workflow?: string): Promise<Project> {
-  const sourceId = uid();
-  await idbSet(sourceId, file);
-  const objectUrl = URL.createObjectURL(file);
-  const duration = await probeDuration(objectUrl);
-  URL.revokeObjectURL(objectUrl);
+/** Chụp 1 khung hình làm ảnh bìa dự án (JPEG nhỏ, dạng data URL). */
+export function captureThumbnail(src: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    video.preload = "auto";
+    video.muted = true;
+    video.playsInline = true;
+    video.crossOrigin = "anonymous";
+    const finish = (value: string | undefined) => {
+      window.clearTimeout(timer);
+      video.removeAttribute("src");
+      video.load();
+      resolve(value);
+    };
+    const timer = window.setTimeout(() => finish(undefined), 8000);
+    video.onloadedmetadata = () => {
+      video.currentTime = Math.min(1, (video.duration || 1) * 0.1);
+    };
+    video.onseeked = () => {
+      try {
+        const width = 320;
+        const height = Math.round((width * (video.videoHeight || 9)) / (video.videoWidth || 16));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d")?.drawImage(video, 0, 0, width, height);
+        finish(canvas.toDataURL("image/jpeg", 0.7));
+      } catch {
+        finish(undefined);
+      }
+    };
+    video.onerror = () => finish(undefined);
+    video.src = src;
+  });
+}
 
+function newClip(sourceId: string, name: string, end: number): Clip {
+  return { id: uid(), sourceId, name, start: 0, end, speed: 1, volume: 1, muted: false };
+}
+
+/** Lưu file vào IndexedDB, trả về nguồn + clip toàn bộ video + URL tạm để chụp ảnh bìa. */
+async function importFiles(files: File[], startIndex: number) {
+  const sources: SourceRef[] = [];
+  const clips: Clip[] = [];
+  let firstUrl: string | null = null;
+  for (const [i, file] of files.entries()) {
+    if (!file.type.startsWith("video/") && !/\.(mp4|mov|webm|mkv|m4v)$/i.test(file.name)) {
+      throw new Error(`"${file.name}" không phải file video.`);
+    }
+    const sourceId = uid();
+    await idbSet(sourceId, file);
+    const objectUrl = URL.createObjectURL(file);
+    const duration = await probeDuration(objectUrl);
+    if (!firstUrl) firstUrl = objectUrl;
+    else URL.revokeObjectURL(objectUrl);
+    sources.push({ id: sourceId, kind: "file", name: file.name, url: file.name });
+    clips.push(newClip(sourceId, `Clip ${startIndex + i + 1}`, duration > 0 ? duration : 0));
+  }
+  return { sources, clips, firstUrl };
+}
+
+export async function createProjectFromFiles(
+  files: File[],
+  workflow?: string,
+  mode?: CreateMode,
+): Promise<Project> {
+  if (files.length === 0) throw new Error("Chưa chọn file video.");
+  const { sources, clips, firstUrl } = await importFiles(files, 0);
+  const thumbnail = firstUrl ? await captureThumbnail(firstUrl) : undefined;
+  if (firstUrl) URL.revokeObjectURL(firstUrl);
+  const first = files[0];
   const project: Project = {
     id: uid(),
-    title: file.name.replace(/\.[a-z0-9]+$/i, "") || "Dự án mới",
+    title:
+      files.length > 1
+        ? `${files.length} clip · ${new Date().toLocaleDateString("vi-VN")}`
+        : first?.name.replace(/\.[a-z0-9]+$/i, "") || "Dự án mới",
     createdAt: Date.now(),
     updatedAt: Date.now(),
     aspect: "9:16",
     ...(workflow ? { workflow } : {}),
-    sources: [{ id: sourceId, kind: "file", name: file.name, url: file.name }],
-    clips: [
-      {
-        id: uid(),
-        sourceId,
-        name: "Clip 1",
-        start: 0,
-        end: duration > 0 ? duration : 0,
-        speed: 1,
-        volume: 1,
-        muted: false,
-      },
-    ],
+    ...(mode ? { mode } : {}),
+    ...(thumbnail ? { thumbnail } : {}),
+    sources,
+    clips,
     captions: [],
   };
   saveProject(project);
   return project;
 }
 
+export function createProjectFromFile(file: File, workflow?: string, mode?: CreateMode) {
+  return createProjectFromFiles([file], workflow, mode);
+}
+
+/** Thêm video mới vào cuối timeline của dự án. */
+export async function addFilesToProject(project: Project, files: File[]): Promise<Project> {
+  const { sources, clips, firstUrl } = await importFiles(files, project.clips.length);
+  if (firstUrl) URL.revokeObjectURL(firstUrl);
+  return {
+    ...project,
+    sources: [...project.sources, ...sources],
+    clips: [...project.clips, ...clips],
+  };
+}
+
 export async function createProjectFromUrl(
   url: string,
   name: string,
   workflow?: string,
+  mode?: CreateMode,
 ): Promise<Project> {
   const sourceId = uid();
+  const thumbnail = await captureThumbnail(url);
   const project: Project = {
     id: uid(),
     title: name || "Dự án mới",
@@ -178,20 +281,11 @@ export async function createProjectFromUrl(
     updatedAt: Date.now(),
     aspect: "9:16",
     ...(workflow ? { workflow } : {}),
+    ...(mode ? { mode } : {}),
+    ...(thumbnail ? { thumbnail } : {}),
     sources: [{ id: sourceId, kind: "url", name, url }],
-    clips: [
-      {
-        id: uid(),
-        sourceId,
-        name: "Clip 1",
-        start: 0,
-        // end = 0 → "full length", hydrated when the editor loads metadata.
-        end: 0,
-        speed: 1,
-        volume: 1,
-        muted: false,
-      },
-    ],
+    // end = 0 → "full length", hydrated when the editor loads metadata.
+    clips: [newClip(sourceId, "Clip 1", 0)],
     captions: [],
   };
   saveProject(project);

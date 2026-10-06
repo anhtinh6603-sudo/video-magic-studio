@@ -3,7 +3,14 @@
 //  - exportTimeline: render the timeline to a downloadable video file with
 //    canvas + MediaRecorder (no server)
 
-import { clipLayout, clipTimelineDuration, type Aspect, type Caption, type Clip } from "./projects";
+import {
+  clipLayout,
+  clipTimelineDuration,
+  type Aspect,
+  type Caption,
+  type Clip,
+  type Hook,
+} from "./projects";
 
 export const ASPECT_SIZE: Record<Aspect, { w: number; h: number; label: string }> = {
   "9:16": { w: 720, h: 1280, label: "Dọc 9:16" },
@@ -105,6 +112,10 @@ export interface ExportOptions {
   captions: Caption[];
   aspect: Aspect;
   videoBitsPerSecond: number;
+  /** Câu hook hiện ở đầu video. */
+  hook?: Hook | undefined;
+  /** Nhạc nền trộn vào bản xuất (lặp lại nếu ngắn hơn video). */
+  music?: { blob: Blob; volume: number } | undefined;
   onProgress?: (p: number) => void;
   signal?: AbortSignal;
 }
@@ -177,6 +188,56 @@ function drawCaptions(
   });
 }
 
+/** Vẽ câu hook: khung vàng chữ đen, đặt ở phía trên khung hình. */
+export function drawHook(ctx: CanvasRenderingContext2D, text: string, w: number, h: number) {
+  const value = text.trim().toUpperCase();
+  if (!value) return;
+  const fontSize = Math.round(Math.min(w, h) * 0.07);
+  ctx.font = `800 ${fontSize}px Sora, Manrope, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const words = value.split(/\s+/);
+  const lines: string[] = [];
+  let line = "";
+  for (const word of words) {
+    const next = line ? `${line} ${word}` : word;
+    if (line && ctx.measureText(next).width > w * 0.8) {
+      lines.push(line);
+      line = word;
+    } else line = next;
+  }
+  if (line) lines.push(line);
+  const lineHeight = fontSize * 1.2;
+  const boxW = Math.min(
+    w * 0.92,
+    Math.max(...lines.map((l) => ctx.measureText(l).width)) + fontSize * 1.2,
+  );
+  const boxH = lines.length * lineHeight + fontSize * 0.7;
+  const top = h * 0.14;
+  ctx.fillStyle = "#f5c518";
+  ctx.beginPath();
+  ctx.roundRect((w - boxW) / 2, top, boxW, boxH, fontSize * 0.3);
+  ctx.fill();
+  ctx.fillStyle = "#111111";
+  lines.forEach((l, i) => ctx.fillText(l, w / 2, top + fontSize * 0.35 + lineHeight * (i + 0.5)));
+}
+
+/**
+ * Gọi `fn` ở khung hình kế tiếp. requestAnimationFrame bị trình duyệt dừng khi tab bị ẩn
+ * hoặc cửa sổ bị che, nên có thêm hẹn giờ dự phòng để quá trình xuất không bị treo.
+ */
+function nextFrame(fn: () => void) {
+  let fired = false;
+  const run = () => {
+    if (fired) return;
+    fired = true;
+    window.clearTimeout(timer);
+    fn();
+  };
+  const timer = window.setTimeout(run, 50);
+  requestAnimationFrame(run);
+}
+
 function seekVideo(video: HTMLVideoElement, time: number): Promise<void> {
   return new Promise((resolve) => {
     if (Math.abs(video.currentTime - time) < 0.05 && video.readyState >= 2) {
@@ -209,7 +270,8 @@ function seekVideo(video: HTMLVideoElement, time: number): Promise<void> {
  * Everything runs locally in the browser — no upload, no server.
  */
 export async function exportTimeline(opts: ExportOptions): Promise<Blob> {
-  const { clips, sources, captions, aspect, videoBitsPerSecond, onProgress, signal } = opts;
+  const { clips, sources, captions, aspect, videoBitsPerSecond, hook, music, onProgress, signal } =
+    opts;
   if (clips.length === 0) throw new Error("Timeline đang trống, chưa có gì để xuất.");
 
   const mime = pickMimeType();
@@ -257,6 +319,20 @@ export async function exportTimeline(opts: ExportOptions): Promise<Blob> {
       }
       videos.set(clip.sourceId, v);
     }
+    let musicNode: AudioBufferSourceNode | null = null;
+    if (music && audioCtx && audioDest) {
+      try {
+        const buffer = await audioCtx.decodeAudioData(await music.blob.arrayBuffer());
+        musicNode = audioCtx.createBufferSource();
+        musicNode.buffer = buffer;
+        musicNode.loop = true;
+        const gain = audioCtx.createGain();
+        gain.gain.value = music.volume;
+        musicNode.connect(gain).connect(audioDest);
+      } catch {
+        throw new Error("Không đọc được file nhạc nền.");
+      }
+    }
     const audioTrack = audioDest?.stream.getAudioTracks()[0];
     if (audioTrack) stream.addTrack(audioTrack);
 
@@ -274,6 +350,7 @@ export async function exportTimeline(opts: ExportOptions): Promise<Blob> {
       recorder.onerror = () => reject(new Error("Lỗi khi ghi video xuất ra."));
     });
     recorder.start(250);
+    musicNode?.start();
 
     const layout = clipLayout(clips);
     const total = layout.reduce((s, l) => s + l.dur, 0);
@@ -308,9 +385,10 @@ export async function exportTimeline(opts: ExportOptions): Promise<Blob> {
             const t = elapsed + Math.max(0, (local - clip.start) / clip.speed);
             drawCover(ctx, v, w, h);
             drawCaptions(ctx, captions, t, w, h);
+            if (hook && t < hook.duration) drawHook(ctx, hook.text, w, h);
             onProgress?.(total > 0 ? Math.min(1, t / total) : 1);
             if (v.currentTime >= clip.end - 0.05 || v.ended) return resolve();
-            requestAnimationFrame(draw);
+            nextFrame(draw);
           };
           draw();
         });
@@ -318,6 +396,11 @@ export async function exportTimeline(opts: ExportOptions): Promise<Blob> {
         elapsed += dur;
       }
     } finally {
+      try {
+        musicNode?.stop();
+      } catch {
+        /* ignore */
+      }
       try {
         recorder.stop();
       } catch {

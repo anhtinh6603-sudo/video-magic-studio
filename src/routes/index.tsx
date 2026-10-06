@@ -37,15 +37,27 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import {
-  createProjectFromFile,
+  CREATE_MODES,
+  createProjectFromFiles,
   createProjectFromUrl,
   deleteProject,
   formatTime,
   isDirectVideoUrl,
   listProjects,
   projectDuration,
+  saveProject,
+  type CreateMode,
   type Project,
 } from "@/lib/projects";
+import {
+  AccountDialog,
+  FeedbackDialog,
+  MobileMenu,
+  MusicLibraryDialog,
+  PricingDialog,
+  useProfileName,
+  type HomeDialog,
+} from "@/components/home/HomeDialogs";
 
 import sampleGolfAerial from "@/assets/sample-golf-aerial.mp4.asset.json";
 import sampleGolfMan from "@/assets/sample-golf-man.mp4.asset.json";
@@ -76,7 +88,15 @@ export const Route = createFileRoute("/")({
   component: Index,
 });
 
-type AiTool = { icon: LucideIcon; label: string; sublabel?: string };
+type AiTool = {
+  icon: LucideIcon;
+  label: string;
+  sublabel?: string;
+  /** Hướng dẫn: công cụ nằm ở đâu trong trình chỉnh sửa. */
+  hint: string;
+  /** Chế độ tạo phù hợp nhất với công cụ này. */
+  mode?: CreateMode;
+};
 
 type WorkflowSkill = { name: string; description: string };
 
@@ -120,18 +140,73 @@ const workflowSkills: WorkflowSkill[] = [
 ];
 
 const tools: AiTool[] = [
-  { icon: Film, label: "Sửa Đổi Video AI" },
-  { icon: Music2, label: "Đồng Bộ Nhạc", sublabel: "Thông minh" },
-  { icon: AudioLines, label: "Lọc Mức Điểm", sublabel: "Âm" },
-  { icon: Sparkles, label: "AI Chấm Điểm", sublabel: "Cảnh Quay" },
-  { icon: Clapperboard, label: "Video Dài →", sublabel: "Short" },
-  { icon: Download, label: "Nhập Từ", sublabel: "YouTube/Drive" },
-  { icon: WandSparkles, label: "Hook Mở Đầu" },
-  { icon: Captions, label: "Caption Đồng", sublabel: "Bộ" },
-  { icon: Scissors, label: "Cắt Khoảng", sublabel: "Lặng Tự Động" },
-  { icon: ImageIcon, label: "Slide Đồ Họa AI" },
-  { icon: FileAudio, label: "Đồng Bộ Nhịp", sublabel: "Nhạc" },
-  { icon: Gauge, label: "Lọc Mức Ồn", sublabel: "Âm" },
+  {
+    icon: Film,
+    label: "Sửa Đổi Video AI",
+    hint: "Cắt, chia, nhân bản, đổi tốc độ clip ở tab Clip của trình chỉnh sửa.",
+  },
+  {
+    icon: Music2,
+    label: "Đồng Bộ Nhạc",
+    sublabel: "Thông minh",
+    hint: "Chèn nhạc nền ở tab “Nhạc & Hook”.",
+    mode: "Nhiều clip + Nhạc",
+  },
+  {
+    icon: AudioLines,
+    label: "Lọc Mức Điểm",
+    sublabel: "Âm",
+    hint: "Chỉnh ngưỡng dB lọc tiếng ở tab AI.",
+  },
+  {
+    icon: Sparkles,
+    label: "AI Chấm Điểm",
+    sublabel: "Cảnh Quay",
+    hint: "Tab AI → “Quét & đề xuất đoạn hay”.",
+    mode: "Video dài → Short",
+  },
+  {
+    icon: Clapperboard,
+    label: "Video Dài →",
+    sublabel: "Short",
+    hint: "Tab AI → chia video dài, xuất mỗi clip thành 1 short.",
+    mode: "Video dài → Short",
+  },
+  {
+    icon: Download,
+    label: "Nhập Từ",
+    sublabel: "YouTube/Drive",
+    hint: "Dán link file video trực tiếp (.mp4, .webm) vào ô phía trên.",
+  },
+  { icon: WandSparkles, label: "Hook Mở Đầu", hint: "Thêm câu hook ở tab “Nhạc & Hook”." },
+  {
+    icon: Captions,
+    label: "Caption Đồng",
+    sublabel: "Bộ",
+    hint: "Thêm caption hoặc nhập file SRT ở tab Caption.",
+    mode: "Talking-head",
+  },
+  {
+    icon: Scissors,
+    label: "Cắt Khoảng",
+    sublabel: "Lặng Tự Động",
+    hint: "Tab AI → “Chạy cắt khoảng lặng”.",
+    mode: "Talking-head",
+  },
+  { icon: ImageIcon, label: "Slide Đồ Họa AI", hint: "Tính năng này sắp ra mắt." },
+  {
+    icon: FileAudio,
+    label: "Đồng Bộ Nhịp",
+    sublabel: "Nhạc",
+    hint: "Tab “Nhạc & Hook” → “Khớp clip theo nhịp”.",
+    mode: "Nhiều clip + Nhạc",
+  },
+  {
+    icon: Gauge,
+    label: "Lọc Mức Ồn",
+    sublabel: "Âm",
+    hint: "Dùng “Cắt khoảng lặng” ở tab AI để bỏ đoạn chỉ có tiếng ồn nền.",
+  },
 ];
 
 const samples = [
@@ -145,17 +220,28 @@ const samples = [
 
 const PROJECT_TABS = ["Tất cả các dự án", "Dự án đã lưu", "Nháp"] as const;
 
+/** "Đã lưu" = được gắn sao hoặc đã xuất video ít nhất 1 lần. */
+const isSaved = (p: Project) => !!p.favorite || !!p.exportedAt;
+
 function Index() {
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
+  const urlInputRef = useRef<HTMLInputElement>(null);
+  const uploadRef = useRef<HTMLDivElement>(null);
+  const projectsRef = useRef<HTMLElement>(null);
   const videoRefs = useRef<(HTMLVideoElement | null)[]>([]);
-  const [mode, setMode] = useState("Video dài → Short");
+  const [mode, setMode] = useState<CreateMode>("Video dài → Short");
+  const [dialog, setDialog] = useState<HomeDialog>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [showAll, setShowAll] = useState(false);
+  const profileName = useProfileName();
   const [tab, setTab] = useState<(typeof PROJECT_TABS)[number]>("Tất cả các dự án");
   const [url, setUrl] = useState("");
   const [fileName, setFileName] = useState("");
   const [selectedSample, setSelectedSample] = useState<number | null>(null);
   const [playingSample, setPlayingSample] = useState<number | null>(null);
-  const [favorite, setFavorite] = useState<string[]>([]);
   const [notice, setNotice] = useState("");
   const [selectedSkill, setSelectedSkill] = useState(workflowSkills[0]?.name ?? "");
   const [projects, setProjects] = useState<Project[]>([]);
@@ -186,7 +272,16 @@ function Index() {
     }
     setCreating(true);
     try {
-      const project = await createProjectFromUrl(value, "Video từ liên kết", selectedSkill);
+      const name = decodeURIComponent(value.split(/[?#]/)[0]?.split("/").pop() ?? "").replace(
+        /\.[a-z0-9]+$/i,
+        "",
+      );
+      const project = await createProjectFromUrl(
+        value,
+        name || "Video từ liên kết",
+        selectedSkill,
+        mode,
+      );
       openEditor(project.id);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Không tạo được dự án.");
@@ -216,7 +311,7 @@ function Index() {
     if (!sample) return;
     setCreating(true);
     try {
-      const project = await createProjectFromUrl(sample.video, sample.name, selectedSkill);
+      const project = await createProjectFromUrl(sample.video, sample.name, selectedSkill, mode);
       openEditor(project.id);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Không tạo được dự án.");
@@ -225,12 +320,15 @@ function Index() {
     }
   }
 
-  async function chooseFile(file?: File) {
-    if (!file) return;
-    setFileName(file.name);
+  async function chooseFiles(list?: FileList | null) {
+    const all = Array.from(list ?? []);
+    // Chế độ "Nhiều clip + Nhạc" nhận nhiều file; các chế độ khác dùng file đầu tiên.
+    const files = mode === "Nhiều clip + Nhạc" ? all : all.slice(0, 1);
+    if (files.length === 0) return;
+    setFileName(files.length > 1 ? `${files.length} file video` : (files[0]?.name ?? ""));
     setCreating(true);
     try {
-      const project = await createProjectFromFile(file, selectedSkill);
+      const project = await createProjectFromFiles(files, selectedSkill, mode);
       openEditor(project.id);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Không tạo được dự án.");
@@ -238,36 +336,98 @@ function Index() {
     }
   }
 
-  async function removeProject(id: string) {
-    if (!window.confirm("Xóa dự án này? Video đã tải lên cũng sẽ bị xóa khỏi máy.")) return;
-    await deleteProject(id);
+  async function removeProjects(ids: string[]) {
+    if (ids.length === 0) return;
+    const message =
+      ids.length > 1
+        ? `Xóa ${ids.length} dự án? Video đã tải lên cũng sẽ bị xóa khỏi máy.`
+        : "Xóa dự án này? Video đã tải lên cũng sẽ bị xóa khỏi máy.";
+    if (!window.confirm(message)) return;
+    for (const id of ids) await deleteProject(id);
     setProjects(listProjects());
-    setNotice("Đã xóa dự án.");
+    setSelectedIds([]);
+    setSelecting(false);
+    setNotice(ids.length > 1 ? `Đã xóa ${ids.length} dự án.` : "Đã xóa dự án.");
   }
 
-  const visibleProjects = projects.filter((p) => {
-    if (tab === "Dự án đã lưu") return !!p.exportedAt;
-    if (tab === "Nháp") return !p.exportedAt;
-    return true;
-  });
+  function toggleFavorite(project: Project) {
+    saveProject({ ...project, favorite: !project.favorite });
+    setProjects(listProjects());
+  }
+
+  function applyTool(tool: AiTool) {
+    if (tool.mode) setMode(tool.mode);
+    const name = `${tool.label}${tool.sublabel ? ` ${tool.sublabel}` : ""}`;
+    setNotice(
+      `${name}: ${tool.hint}${tool.mode ? ` Đã chuyển chế độ tạo sang “${tool.mode}”.` : ""}`,
+    );
+    if (tool.icon === Download) urlInputRef.current?.focus();
+    else uploadRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  function showProjects() {
+    setTab("Tất cả các dự án");
+    setShowAll(true);
+    projectsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  const visibleProjects = projects
+    .filter((p) => {
+      if (tab === "Dự án đã lưu") return isSaved(p);
+      if (tab === "Nháp") return !p.exportedAt;
+      return true;
+    })
+    .sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite));
+  const shownProjects = showAll ? visibleProjects : visibleProjects.slice(0, 10);
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-background text-foreground">
-      <Header onNotice={setNotice} />
+      <Header
+        profileName={profileName}
+        onOpen={setDialog}
+        onMenu={() => setMenuOpen(true)}
+        onProjects={showProjects}
+      />
 
       <aside className="fixed left-0 top-14 z-30 hidden h-[calc(100vh-3.5rem)] w-44 border-r border-border/60 bg-background/95 p-3 xl:block">
         <Button
           variant="outline"
           className="h-10 w-full justify-start border-brand/65 bg-brand/5 text-brand"
+          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
         >
           <Home className="size-4" /> Trang chủ
         </Button>
-        <div className="mt-auto flex h-[calc(100%-3rem)] items-end">
-          <Button variant="ghost" className="w-full justify-start">
+        <Button variant="ghost" className="mt-1 w-full justify-start" onClick={showProjects}>
+          <FolderOpen className="size-4" /> Dự án ({projects.length})
+        </Button>
+        <Button
+          variant="ghost"
+          className="mt-1 w-full justify-start"
+          onClick={() => setDialog("music")}
+        >
+          <Headphones className="size-4" /> Âm thanh
+        </Button>
+        <div className="mt-auto flex h-[calc(100%-8rem)] items-end">
+          <Button
+            variant="ghost"
+            className="w-full justify-start"
+            onClick={() => setDialog("feedback")}
+          >
             <MessageSquareText className="size-4" /> Phản hồi
           </Button>
         </div>
       </aside>
+
+      <PricingDialog open={dialog === "pricing"} onOpenChange={(o) => !o && setDialog(null)} />
+      <MusicLibraryDialog open={dialog === "music"} onOpenChange={(o) => !o && setDialog(null)} />
+      <AccountDialog open={dialog === "account"} onOpenChange={(o) => !o && setDialog(null)} />
+      <FeedbackDialog open={dialog === "feedback"} onOpenChange={(o) => !o && setDialog(null)} />
+      <MobileMenu
+        open={menuOpen}
+        onOpenChange={setMenuOpen}
+        onOpen={setDialog}
+        onProjects={showProjects}
+      />
 
       <main className="relative mx-auto max-w-[1040px] px-4 pb-14 pt-9 sm:px-6 xl:ml-[calc((100vw-1040px)/2+42px)]">
         <div className="pointer-events-none absolute left-1/2 top-6 -z-0 h-80 w-[620px] -translate-x-1/2 app-grid opacity-20 [mask-image:linear-gradient(to_bottom,black,transparent)]" />
@@ -279,11 +439,15 @@ function Index() {
             Kéo thả video dài — AI quét và đề xuất đoạn hay nhất.
           </p>
 
-          <div className="mt-4 rounded-lg border border-border bg-card p-2 shadow-2xl">
+          <div
+            ref={uploadRef}
+            className="mt-4 scroll-mt-24 rounded-lg border border-border bg-card p-2 shadow-2xl"
+          >
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <Link2 className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <input
+                  ref={urlInputRef}
                   aria-label="Liên kết video"
                   value={url}
                   onChange={(event) => setUrl(event.target.value)}
@@ -313,7 +477,7 @@ function Index() {
               onDragOver={(event) => event.preventDefault()}
               onDrop={(event) => {
                 event.preventDefault();
-                chooseFile(event.dataTransfer.files[0]);
+                void chooseFiles(event.dataTransfer.files);
               }}
               className="flex h-16 w-full items-center justify-center gap-3 rounded-md border border-dashed border-border bg-panel-raised text-left transition-colors hover:border-brand/60"
             >
@@ -322,10 +486,16 @@ function Index() {
               </span>
               <span>
                 <strong className="block text-xs">
-                  {fileName || "Kéo thả file video dài vào đây"}
+                  {creating && fileName
+                    ? `Đang nạp ${fileName}…`
+                    : fileName ||
+                      (mode === "Nhiều clip + Nhạc"
+                        ? "Kéo thả nhiều clip vào đây"
+                        : "Kéo thả file video dài vào đây")}
                 </strong>
                 <span className="mt-1 block text-[10px] text-muted-foreground">
                   hoặc bấm để chọn file từ máy
+                  {mode === "Nhiều clip + Nhạc" ? " (chọn được nhiều file)" : ""}
                 </span>
               </span>
             </button>
@@ -333,14 +503,18 @@ function Index() {
               ref={inputRef}
               type="file"
               accept="video/*"
+              multiple={mode === "Nhiều clip + Nhạc"}
               className="hidden"
-              onChange={(event) => chooseFile(event.target.files?.[0])}
+              onChange={(event) => {
+                void chooseFiles(event.target.files);
+                event.target.value = "";
+              }}
             />
           </div>
 
           <div className="mt-4 flex flex-wrap items-center justify-center gap-1 text-[11px]">
             <span className="mr-2 text-muted-foreground">Chế độ tạo:</span>
-            {["Talking-head", "Nhiều clip + Nhạc", "Video dài → Short"].map((item) => (
+            {CREATE_MODES.map((item) => (
               <Button
                 key={item}
                 variant="ghost"
@@ -369,26 +543,28 @@ function Index() {
                   aria-hidden={copy === 1}
                   className="flex items-start gap-5 pr-5 sm:gap-8 sm:pr-8"
                 >
-                  {tools.map(({ icon: Icon, label, sublabel }) => (
-                    <button
-                      key={`${copy}-${label}`}
-                      type="button"
-                      tabIndex={copy === 1 ? -1 : 0}
-                      onClick={() =>
-                        setNotice(`${label}${sublabel ? ` ${sublabel}` : ""} đã được chọn.`)
-                      }
-                      className="group flex w-[72px] shrink-0 flex-col items-center gap-2 text-center sm:w-[86px]"
-                    >
-                      <span className="grid size-10 place-items-center rounded-full border border-border bg-panel-raised text-brand transition-all group-hover:border-brand group-hover:bg-brand/10">
-                        <Icon className="size-[18px]" strokeWidth={1.8} />
-                      </span>
-                      <span className="text-[9px] font-semibold leading-3 text-muted-foreground group-hover:text-foreground">
-                        {label}
-                        <br />
-                        {sublabel}
-                      </span>
-                    </button>
-                  ))}
+                  {tools.map((tool) => {
+                    const { icon: Icon, label, sublabel } = tool;
+                    return (
+                      <button
+                        key={`${copy}-${label}`}
+                        type="button"
+                        tabIndex={copy === 1 ? -1 : 0}
+                        title={tool.hint}
+                        onClick={() => applyTool(tool)}
+                        className="group flex w-[72px] shrink-0 flex-col items-center gap-2 text-center sm:w-[86px]"
+                      >
+                        <span className="grid size-10 place-items-center rounded-full border border-border bg-panel-raised text-brand transition-all group-hover:border-brand group-hover:bg-brand/10">
+                          <Icon className="size-[18px]" strokeWidth={1.8} />
+                        </span>
+                        <span className="text-[9px] font-semibold leading-3 text-muted-foreground group-hover:text-foreground">
+                          {label}
+                          <br />
+                          {sublabel}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               ))}
             </div>
@@ -523,13 +699,17 @@ function Index() {
           </div>
         </section>
 
-        <section className="relative z-10 mt-9" aria-label="Danh sách dự án">
+        <section
+          ref={projectsRef}
+          className="relative z-10 mt-9 scroll-mt-20"
+          aria-label="Danh sách dự án"
+        >
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border">
             <div className="flex items-center gap-4">
               {PROJECT_TABS.map((item) => {
                 const count =
                   item === "Dự án đã lưu"
-                    ? projects.filter((p) => p.exportedAt).length
+                    ? projects.filter(isSaved).length
                     : item === "Nháp"
                       ? projects.filter((p) => !p.exportedAt).length
                       : projects.length;
@@ -549,12 +729,41 @@ function Index() {
                 );
               })}
             </div>
-            <div className="flex gap-3 text-[10px]">
-              <Button variant="ghost" size="sm" className="px-1">
-                Chọn nhiều
+            <div className="flex items-center gap-3 text-[10px]">
+              {selecting && (
+                <>
+                  <span className="text-muted-foreground">Đã chọn {selectedIds.length}</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="px-1 text-destructive hover:text-destructive"
+                    disabled={selectedIds.length === 0}
+                    onClick={() => void removeProjects(selectedIds)}
+                  >
+                    <Trash2 className="size-3" /> Xóa
+                  </Button>
+                </>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn("px-1", selecting && "text-brand")}
+                disabled={projects.length === 0}
+                onClick={() => {
+                  setSelecting((v) => !v);
+                  setSelectedIds([]);
+                }}
+              >
+                {selecting ? "Xong" : "Chọn nhiều"}
               </Button>
-              <Button variant="ghost" size="sm" className="px-1">
-                Xem tất cả
+              <Button
+                variant="ghost"
+                size="sm"
+                className="px-1"
+                disabled={visibleProjects.length <= 10}
+                onClick={() => setShowAll((v) => !v)}
+              >
+                {showAll ? "Thu gọn" : "Xem tất cả"}
               </Button>
             </div>
           </div>
@@ -569,73 +778,112 @@ function Index() {
             </div>
           ) : (
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-              {visibleProjects.map((project) => (
-                <article
-                  key={project.id}
-                  className="group cursor-pointer overflow-hidden rounded-lg border border-border bg-card transition-colors hover:border-brand/60"
-                  onClick={() => openEditor(project.id)}
-                >
-                  <div className="relative aspect-[16/9] overflow-hidden bg-panel-raised">
-                    <div className="flex h-full flex-col items-center justify-center gap-2 px-3 text-center">
-                      <span className="grid size-8 place-items-center rounded-full bg-brand text-brand-foreground transition-transform group-hover:scale-110">
-                        <Play className="ml-0.5 size-4" fill="currentColor" />
-                      </span>
-                      <span className="line-clamp-2 text-[9px] font-semibold">{project.title}</span>
-                    </div>
-                    {project.workflow && (
-                      <span className="absolute left-2 top-2 max-w-[70%] truncate rounded bg-background/80 px-1.5 py-1 text-[8px] font-bold text-brand">
-                        {project.workflow}
-                      </span>
+              {shownProjects.map((project) => {
+                const checked = selectedIds.includes(project.id);
+                return (
+                  <article
+                    key={project.id}
+                    className={cn(
+                      "group cursor-pointer overflow-hidden rounded-lg border bg-card transition-colors hover:border-brand/60",
+                      checked ? "border-brand" : "border-border",
                     )}
-                    <div className="absolute right-1 top-1 flex gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label="Yêu thích dự án"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setFavorite((old) =>
-                            old.includes(project.id)
-                              ? old.filter((item) => item !== project.id)
-                              : [...old, project.id],
-                          );
-                        }}
-                        className="size-7 bg-background/65"
-                      >
-                        <Star
+                    onClick={() => {
+                      if (!selecting) {
+                        openEditor(project.id);
+                        return;
+                      }
+                      setSelectedIds((old) =>
+                        old.includes(project.id)
+                          ? old.filter((id) => id !== project.id)
+                          : [...old, project.id],
+                      );
+                    }}
+                  >
+                    <div className="relative aspect-[16/9] overflow-hidden bg-panel-raised">
+                      {project.thumbnail ? (
+                        <>
+                          <img
+                            src={project.thumbnail}
+                            alt=""
+                            loading="lazy"
+                            className="h-full w-full object-cover"
+                          />
+                          <span className="absolute inset-0 grid place-items-center opacity-0 transition-opacity group-hover:opacity-100">
+                            <span className="grid size-8 place-items-center rounded-full bg-brand text-brand-foreground">
+                              <Play className="ml-0.5 size-4" fill="currentColor" />
+                            </span>
+                          </span>
+                        </>
+                      ) : (
+                        <div className="flex h-full flex-col items-center justify-center gap-2 px-3 text-center">
+                          <span className="grid size-8 place-items-center rounded-full bg-brand text-brand-foreground transition-transform group-hover:scale-110">
+                            <Play className="ml-0.5 size-4" fill="currentColor" />
+                          </span>
+                          <span className="line-clamp-2 text-[9px] font-semibold">
+                            {project.title}
+                          </span>
+                        </div>
+                      )}
+                      {selecting && (
+                        <span
                           className={cn(
-                            "size-3",
-                            favorite.includes(project.id) && "fill-brand text-brand",
+                            "absolute bottom-2 right-2 grid size-5 place-items-center rounded-full border",
+                            checked
+                              ? "border-brand bg-brand text-brand-foreground"
+                              : "border-foreground/40 bg-background/70",
                           )}
-                        />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label="Xóa dự án"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          removeProject(project.id);
-                        }}
-                        className="size-7 bg-background/65 text-destructive opacity-0 transition-opacity group-hover:opacity-100"
-                      >
-                        <Trash2 className="size-3" />
-                      </Button>
+                        >
+                          {checked && <Check className="size-3" />}
+                        </span>
+                      )}
+                      {project.workflow && (
+                        <span className="absolute left-2 top-2 max-w-[70%] truncate rounded bg-background/80 px-1.5 py-1 text-[8px] font-bold text-brand">
+                          {project.workflow}
+                        </span>
+                      )}
+                      <div className="absolute right-1 top-1 flex gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label="Yêu thích dự án"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleFavorite(project);
+                          }}
+                          className="size-7 bg-background/65"
+                        >
+                          <Star
+                            className={cn("size-3", project.favorite && "fill-brand text-brand")}
+                          />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label="Xóa dự án"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void removeProjects([project.id]);
+                          }}
+                          className="size-7 bg-background/65 text-destructive opacity-0 transition-opacity group-hover:opacity-100"
+                        >
+                          <Trash2 className="size-3" />
+                        </Button>
+                      </div>
+                      <span className="absolute bottom-2 left-2 rounded bg-background/80 px-1.5 py-1 font-mono text-[8px] font-bold">
+                        {formatTime(projectDuration(project))}
+                      </span>
                     </div>
-                    <span className="absolute bottom-2 left-2 rounded bg-background/80 px-1.5 py-1 font-mono text-[8px] font-bold">
-                      {formatTime(projectDuration(project))}
-                    </span>
-                  </div>
-                  <div className="p-2">
-                    <h3 className="truncate text-[10px] font-bold">{project.title}</h3>
-                    <p className="mt-1 text-[8px] text-muted-foreground">
-                      {new Date(project.updatedAt).toLocaleDateString("vi-VN")} ·{" "}
-                      {project.clips.length} clip · {project.captions.length} caption
-                      {project.exportedAt ? " · đã xuất" : ""}
-                    </p>
-                  </div>
-                </article>
-              ))}
+                    <div className="p-2">
+                      <h3 className="truncate text-[10px] font-bold">{project.title}</h3>
+                      <p className="mt-1 text-[8px] text-muted-foreground">
+                        {new Date(project.updatedAt).toLocaleDateString("vi-VN")} ·{" "}
+                        {project.clips.length} clip · {project.captions.length} caption
+                        {project.exportedAt ? " · đã xuất" : ""}
+                      </p>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
@@ -660,12 +908,28 @@ function Index() {
   );
 }
 
-function Header({ onNotice }: { onNotice: (message: string) => void }) {
+function Header({
+  profileName,
+  onOpen,
+  onMenu,
+  onProjects,
+}: {
+  profileName: string;
+  onOpen: (dialog: Exclude<HomeDialog, null>) => void;
+  onMenu: () => void;
+  onProjects: () => void;
+}) {
   return (
     <header className="sticky top-0 z-40 h-14 border-b border-brand/25 bg-background/95 shadow-[0_4px_22px_color-mix(in_oklab,var(--brand)_10%,transparent)] backdrop-blur">
       <div className="flex h-full items-center justify-between px-3 sm:px-5">
         <div className="flex min-w-0 items-center gap-3">
-          <Button variant="ghost" size="icon" className="xl:hidden">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="xl:hidden"
+            aria-label="Mở menu"
+            onClick={onMenu}
+          >
             <Menu className="size-4" />
           </Button>
           <div className="font-display text-2xl font-extrabold italic gold-text sm:text-3xl">
@@ -679,25 +943,23 @@ function Header({ onNotice }: { onNotice: (message: string) => void }) {
           Thời Gian · Thu Nhập · Tự Do
         </div>
         <nav className="flex items-center gap-1.5">
-          <Button variant="nav" size="sm" onClick={() => onNotice("Bảng giá sẽ được cập nhật.")}>
+          <Button variant="nav" size="sm" onClick={() => onOpen("pricing")}>
             <CircleDollarSign className="size-3.5" />
             <span className="hidden sm:inline">Giá cả</span>
           </Button>
-          <Button variant="nav" size="sm" onClick={() => onNotice("Đã mở thư viện dự án.")}>
+          <Button variant="nav" size="sm" onClick={onProjects}>
             <FolderOpen className="size-3.5" />
             <span className="hidden md:inline">Dự án</span>
           </Button>
-          <Button variant="nav" size="sm" onClick={() => onNotice("Đã mở thư viện âm thanh.")}>
+          <Button variant="nav" size="sm" onClick={() => onOpen("music")}>
             <Headphones className="size-3.5" />
             <span className="hidden md:inline">Âm thanh</span>
           </Button>
-          <Button
-            variant="nav"
-            size="sm"
-            onClick={() => onNotice("Tính năng đăng nhập đang chờ kết nối.")}
-          >
+          <Button variant="nav" size="sm" onClick={() => onOpen("account")}>
             <User className="size-3.5 sm:hidden" />
-            <span className="hidden sm:inline">Đăng nhập</span>
+            <span className="hidden max-w-[120px] truncate sm:inline">
+              {profileName || "Đăng nhập"}
+            </span>
           </Button>
         </nav>
       </div>

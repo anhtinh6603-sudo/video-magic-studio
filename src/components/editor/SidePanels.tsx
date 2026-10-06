@@ -2,8 +2,11 @@ import { useState } from "react";
 import {
   Captions,
   Copy,
+  FileDown,
+  FileUp,
   Film,
   Loader2,
+  Music2,
   Plus,
   Scissors,
   Sparkles,
@@ -165,6 +168,8 @@ interface CaptionPanelProps {
   onAdd: () => void;
   onChange: (id: string, patch: Partial<Caption>) => void;
   onDelete: (id: string) => void;
+  onImportSrt: (file: File) => void;
+  onExportSrt: () => void;
 }
 
 export function CaptionPanel({
@@ -175,6 +180,8 @@ export function CaptionPanel({
   onAdd,
   onChange,
   onDelete,
+  onImportSrt,
+  onExportSrt,
 }: CaptionPanelProps) {
   const sorted = [...captions].sort((a, b) => a.start - b.start);
   return (
@@ -182,6 +189,30 @@ export function CaptionPanel({
       <Button variant="gold" size="sm" onClick={onAdd} className="w-full">
         <Plus className="size-3.5" /> Thêm caption tại {formatTimeMs(time)}
       </Button>
+      <div className="grid grid-cols-2 gap-2">
+        <label className="inline-flex h-8 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-border bg-card px-3 text-[11px] font-semibold hover:bg-accent">
+          <FileUp className="size-3.5" /> Nhập SRT/VTT
+          <input
+            type="file"
+            accept=".srt,.vtt,text/vtt"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) onImportSrt(file);
+            }}
+          />
+        </label>
+        <Button
+          variant="outline"
+          size="sm"
+          className="text-[11px]"
+          disabled={!captions.some((c) => c.text.trim())}
+          onClick={onExportSrt}
+        >
+          <FileDown className="size-3.5" /> Xuất SRT
+        </Button>
+      </div>
       <p className="text-[10px] leading-4 text-muted-foreground">
         Mẹo: bọc từ khóa trong <span className="font-mono text-brand">*dấu sao*</span> để hiển thị
         màu vàng nổi bật, ví dụ: <span className="font-mono">Giảm *50%* hôm nay</span>
@@ -284,15 +315,12 @@ export interface ToolsPanelProps {
   onCutSilence: () => void;
   onSplitShorts: () => void;
   onExport: () => void;
+  highlightCount: number;
+  onHighlightCount: (v: number) => void;
+  onSuggestHighlights: () => void;
 }
 
-const COMING_SOON = [
-  "AI chấm điểm cảnh quay",
-  "Hook mở đầu tự động",
-  "Đồng bộ beat nhạc",
-  "Slide đồ họa AI",
-  "Tách nền / xóa vật thể",
-];
+const COMING_SOON = ["Slide đồ họa AI", "Tách nền / xóa vật thể", "Nhận dạng giọng nói → caption"];
 
 export function ToolsPanel(props: ToolsPanelProps) {
   const {
@@ -309,11 +337,54 @@ export function ToolsPanel(props: ToolsPanelProps) {
     onCutSilence,
     onSplitShorts,
     onExport,
+    highlightCount,
+    onHighlightCount,
+    onSuggestHighlights,
   } = props;
   const running = busy !== null;
 
   return (
     <div className="space-y-4">
+      <div className="rounded-lg border border-brand/40 bg-panel p-3">
+        <h4 className="flex items-center gap-2 text-[12px] font-bold">
+          <Sparkles className="size-4 text-brand" /> AI chấm điểm & chọn đoạn hay
+        </h4>
+        <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
+          Quét âm thanh của clip đang chọn, chấm điểm theo mật độ lời nói, độ lớn và cảm xúc, rồi
+          giữ lại những đoạn hay nhất (dài khoảng {shortLen}s, cắt đúng chỗ ngắt câu).
+        </p>
+        <div className="mt-3">
+          <div className="flex items-center justify-between">
+            <Label className="text-[11px]">Số đoạn muốn lấy</Label>
+            <span className="font-mono text-[11px] text-brand">{highlightCount}</span>
+          </div>
+          <Slider
+            value={[highlightCount]}
+            min={1}
+            max={15}
+            step={1}
+            onValueChange={([v]) => onHighlightCount(v ?? 5)}
+            className="mt-2"
+            disabled={running}
+          />
+        </div>
+        <Button
+          variant="gold"
+          size="sm"
+          className="mt-3 w-full"
+          disabled={!hasClip || running}
+          onClick={onSuggestHighlights}
+        >
+          {running && busy === "highlight" ? (
+            <>
+              <Loader2 className="size-3.5 animate-spin" /> Đang chấm điểm…
+            </>
+          ) : (
+            "Quét & đề xuất đoạn hay"
+          )}
+        </Button>
+      </div>
+
       <div className="rounded-lg border border-border bg-panel p-3">
         <h4 className="flex items-center gap-2 text-[12px] font-bold">
           <Scissors className="size-4 text-brand" /> Cắt khoảng lặng tự động
@@ -383,7 +454,8 @@ export function ToolsPanel(props: ToolsPanelProps) {
           <Film className="size-4 text-brand" /> Video dài → nhiều Short
         </h4>
         <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
-          Tự động chia clip dài thành các đoạn short theo độ dài bạn chọn.
+          Chia đều clip dài thành các short theo độ dài bạn chọn (độ dài này cũng dùng cho AI đề
+          xuất ở trên).
         </p>
         <div className="mt-3 flex items-center gap-2">
           <Label className="text-[11px]">Mỗi short tối đa</Label>
@@ -439,16 +511,17 @@ export function ToolsPanel(props: ToolsPanelProps) {
 // Tab container
 // ---------------------------------------------------------------------------
 
-export type SideTab = "clip" | "caption" | "tools";
+export type SideTab = "clip" | "caption" | "music" | "tools";
 
 export function SideTabs({ tab, onTab }: { tab: SideTab; onTab: (t: SideTab) => void }) {
   const items: { id: SideTab; label: string; icon: typeof Film }[] = [
     { id: "clip", label: "Clip", icon: Film },
     { id: "caption", label: "Caption", icon: Captions },
-    { id: "tools", label: "Công cụ AI", icon: Sparkles },
+    { id: "music", label: "Nhạc & Hook", icon: Music2 },
+    { id: "tools", label: "AI", icon: Sparkles },
   ];
   return (
-    <div className="grid grid-cols-3 gap-1 rounded-lg border border-border bg-panel p-1">
+    <div className="grid grid-cols-4 gap-1 rounded-lg border border-border bg-panel p-1">
       {items.map(({ id, label, icon: Icon }) => (
         <button
           key={id}
@@ -469,7 +542,7 @@ export function SideTabs({ tab, onTab }: { tab: SideTab; onTab: (t: SideTab) => 
   );
 }
 
-export function useSideTabState() {
-  const [tab, setTab] = useState<SideTab>("clip");
+export function useSideTabState(initial: SideTab = "clip") {
+  const [tab, setTab] = useState<SideTab>(initial);
   return { tab, setTab };
 }
