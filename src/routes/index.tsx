@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   AudioLines,
   Captions,
@@ -17,6 +17,7 @@ import {
   Home,
   ImageIcon,
   Link2,
+  Loader2,
   Menu,
   MessageSquareText,
   Music2,
@@ -26,13 +27,25 @@ import {
   Scissors,
   Sparkles,
   Star,
+  Trash2,
   Upload,
   User,
   WandSparkles,
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+
+import {
+  createProjectFromFile,
+  createProjectFromUrl,
+  deleteProject,
+  formatTime,
+  isDirectVideoUrl,
+  listProjects,
+  projectDuration,
+  type Project,
+} from "@/lib/projects";
 
 import sampleGolfAerial from "@/assets/sample-golf-aerial.mp4.asset.json";
 import sampleGolfMan from "@/assets/sample-golf-man.mp4.asset.json";
@@ -130,41 +143,56 @@ const samples = [
   { video: sampleLake.url, name: "Video mẫu 6" },
 ];
 
-const projects = [
-  {
-    title: "cải phân tích xương — bản đề xuất 8 cảnh",
-    meta: "Bản dự án · 2:44",
-    image: null,
-    active: true,
-  },
-  {
-    title: "cải phân tích xương — bản đề xuất 8 cảnh",
-    meta: "Bản dự án · 2:15",
-    image: null,
-    active: true,
-  },
-  { title: "video-nhiều-clip-nhạc", meta: "30.09.2026 · 1:39", image: runner },
-  { title: "2026-09-30_ai_sub-agent-edit-video", meta: "30.09.2026 · 0:48", image: presenter },
-  { title: "video-nhiều-clip-nhạc", meta: "28.09.2026 · 1:49", image: stretch },
-];
+const PROJECT_TABS = ["Tất cả các dự án", "Dự án đã lưu", "Nháp"] as const;
 
 function Index() {
+  const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
   const videoRefs = useRef<(HTMLVideoElement | null)[]>([]);
   const [mode, setMode] = useState("Video dài → Short");
-  const [tab, setTab] = useState("Tất cả các dự án");
+  const [tab, setTab] = useState<(typeof PROJECT_TABS)[number]>("Tất cả các dự án");
   const [url, setUrl] = useState("");
   const [fileName, setFileName] = useState("");
   const [selectedSample, setSelectedSample] = useState<number | null>(null);
   const [playingSample, setPlayingSample] = useState<number | null>(null);
-  const [favorite, setFavorite] = useState<number[]>([3]);
+  const [favorite, setFavorite] = useState<string[]>([]);
   const [notice, setNotice] = useState("");
-  const [selectedSkill, setSelectedSkill] = useState(workflowSkills[0].name);
+  const [selectedSkill, setSelectedSkill] = useState(workflowSkills[0]?.name ?? "");
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [creating, setCreating] = useState(false);
 
-  function handleUrl() {
-    setNotice(
-      url.trim() ? "Đã nhận liên kết — sẵn sàng tạo dự án." : "Hãy dán liên kết video trước.",
-    );
+  useEffect(() => {
+    const reload = () => setProjects(listProjects());
+    reload();
+    window.addEventListener("focus", reload);
+    return () => window.removeEventListener("focus", reload);
+  }, []);
+
+  function openEditor(projectId: string) {
+    navigate({ to: "/editor/$projectId", params: { projectId } });
+  }
+
+  async function handleUrl() {
+    const value = url.trim();
+    if (!value) {
+      setNotice("Hãy dán liên kết video trước.");
+      return;
+    }
+    if (!isDirectVideoUrl(value)) {
+      setNotice(
+        "Chỉ hỗ trợ link file video trực tiếp (.mp4, .webm…). Link YouTube / TikTok / Drive sẽ được hỗ trợ ở bản sau.",
+      );
+      return;
+    }
+    setCreating(true);
+    try {
+      const project = await createProjectFromUrl(value, "Video từ liên kết", selectedSkill);
+      openEditor(project.id);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Không tạo được dự án.");
+    } finally {
+      setCreating(false);
+    }
   }
 
   function toggleSample(index: number) {
@@ -183,11 +211,45 @@ function Index() {
     setPlayingSample(index);
   }
 
-  function chooseFile(file?: File) {
+  async function createFromSample(index: number) {
+    const sample = samples[index];
+    if (!sample) return;
+    setCreating(true);
+    try {
+      const project = await createProjectFromUrl(sample.video, sample.name, selectedSkill);
+      openEditor(project.id);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Không tạo được dự án.");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function chooseFile(file?: File) {
     if (!file) return;
     setFileName(file.name);
-    setNotice(`Đã thêm ${file.name}`);
+    setCreating(true);
+    try {
+      const project = await createProjectFromFile(file, selectedSkill);
+      openEditor(project.id);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Không tạo được dự án.");
+      setCreating(false);
+    }
   }
+
+  async function removeProject(id: string) {
+    if (!window.confirm("Xóa dự án này? Video đã tải lên cũng sẽ bị xóa khỏi máy.")) return;
+    await deleteProject(id);
+    setProjects(listProjects());
+    setNotice("Đã xóa dự án.");
+  }
+
+  const visibleProjects = projects.filter((p) => {
+    if (tab === "Dự án đã lưu") return !!p.exportedAt;
+    if (tab === "Nháp") return !p.exportedAt;
+    return true;
+  });
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-background text-foreground">
@@ -230,8 +292,14 @@ function Index() {
                   className="h-10 w-full rounded-md border border-input bg-background pl-9 pr-3 text-xs outline-none placeholder:text-muted-foreground focus:border-brand"
                 />
               </div>
-              <Button variant="gold" size="sm" className="h-10" onClick={handleUrl}>
-                Lấy video
+              <Button
+                variant="gold"
+                size="sm"
+                className="h-10"
+                onClick={handleUrl}
+                disabled={creating}
+              >
+                {creating ? <Loader2 className="size-4 animate-spin" /> : "Lấy video"}
               </Button>
             </div>
 
@@ -433,6 +501,23 @@ function Index() {
                   )}
                 </button>
                 <div className="px-2 py-2 text-[10px] font-semibold">{sample.name}</div>
+                {selectedSample === index && (
+                  <div className="px-2 pb-2">
+                    <Button
+                      variant="gold"
+                      size="sm"
+                      className="h-7 w-full text-[10px]"
+                      disabled={creating}
+                      onClick={() => createFromSample(index)}
+                    >
+                      {creating ? (
+                        <Loader2 className="size-3 animate-spin" />
+                      ) : (
+                        "Tạo dự án từ mẫu này"
+                      )}
+                    </Button>
+                  </div>
+                )}
               </article>
             ))}
           </div>
@@ -441,20 +526,28 @@ function Index() {
         <section className="relative z-10 mt-9" aria-label="Danh sách dự án">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border">
             <div className="flex items-center gap-4">
-              {["Tất cả các dự án", "Dự án đã lưu", "Nháp"].map((item, index) => (
-                <Button
-                  key={item}
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setTab(item)}
-                  className={cn(
-                    "h-9 rounded-none px-0 text-[11px]",
-                    tab === item && "border-b-2 border-brand text-foreground",
-                  )}
-                >
-                  {item} <span className="text-muted-foreground">({index === 0 ? 6 : 0})</span>
-                </Button>
-              ))}
+              {PROJECT_TABS.map((item) => {
+                const count =
+                  item === "Dự án đã lưu"
+                    ? projects.filter((p) => p.exportedAt).length
+                    : item === "Nháp"
+                      ? projects.filter((p) => !p.exportedAt).length
+                      : projects.length;
+                return (
+                  <Button
+                    key={item}
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setTab(item)}
+                    className={cn(
+                      "h-9 rounded-none px-0 text-[11px]",
+                      tab === item && "border-b-2 border-brand text-foreground",
+                    )}
+                  >
+                    {item} <span className="text-muted-foreground">({count})</span>
+                  </Button>
+                );
+              })}
             </div>
             <div className="flex gap-3 text-[10px]">
               <Button variant="ghost" size="sm" className="px-1">
@@ -466,65 +559,85 @@ function Index() {
             </div>
           </div>
 
-          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            {projects.map((project, index) => (
-              <article
-                key={`${project.title}-${index}`}
-                className={cn(
-                  "overflow-hidden rounded-lg border bg-card",
-                  project.active ? "border-brand/65" : "border-border",
-                )}
-              >
-                <div className="relative aspect-[16/9] overflow-hidden bg-panel-raised">
-                  {project.image ? (
-                    <img
-                      src={project.image}
-                      alt=""
-                      loading="lazy"
-                      width={768}
-                      height={1376}
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
+          {visibleProjects.length === 0 ? (
+            <div className="mt-3 rounded-lg border border-dashed border-border p-10 text-center">
+              <Clapperboard className="mx-auto size-8 text-muted-foreground" />
+              <p className="mt-3 text-xs font-bold">Chưa có dự án nào</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Dán link video hoặc kéo thả file vào khung phía trên để tạo dự án đầu tiên.
+              </p>
+            </div>
+          ) : (
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              {visibleProjects.map((project) => (
+                <article
+                  key={project.id}
+                  className="group cursor-pointer overflow-hidden rounded-lg border border-border bg-card transition-colors hover:border-brand/60"
+                  onClick={() => openEditor(project.id)}
+                >
+                  <div className="relative aspect-[16/9] overflow-hidden bg-panel-raised">
                     <div className="flex h-full flex-col items-center justify-center gap-2 px-3 text-center">
-                      <span className="grid size-8 place-items-center rounded-full bg-brand text-brand-foreground">
+                      <span className="grid size-8 place-items-center rounded-full bg-brand text-brand-foreground transition-transform group-hover:scale-110">
                         <Play className="ml-0.5 size-4" fill="currentColor" />
                       </span>
-                      <span className="text-[9px] font-semibold">
-                        cải phân tích xương — bản đề xuất 8 cảnh
-                      </span>
+                      <span className="line-clamp-2 text-[9px] font-semibold">{project.title}</span>
                     </div>
-                  )}
-                  {project.image && (
-                    <span className="absolute bottom-2 left-2 rounded bg-background/80 px-1.5 py-1 text-[8px] font-bold">
-                      Còn 15 ngày
+                    {project.workflow && (
+                      <span className="absolute left-2 top-2 max-w-[70%] truncate rounded bg-background/80 px-1.5 py-1 text-[8px] font-bold text-brand">
+                        {project.workflow}
+                      </span>
+                    )}
+                    <div className="absolute right-1 top-1 flex gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="Yêu thích dự án"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setFavorite((old) =>
+                            old.includes(project.id)
+                              ? old.filter((item) => item !== project.id)
+                              : [...old, project.id],
+                          );
+                        }}
+                        className="size-7 bg-background/65"
+                      >
+                        <Star
+                          className={cn(
+                            "size-3",
+                            favorite.includes(project.id) && "fill-brand text-brand",
+                          )}
+                        />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="Xóa dự án"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeProject(project.id);
+                        }}
+                        className="size-7 bg-background/65 text-destructive opacity-0 transition-opacity group-hover:opacity-100"
+                      >
+                        <Trash2 className="size-3" />
+                      </Button>
+                    </div>
+                    <span className="absolute bottom-2 left-2 rounded bg-background/80 px-1.5 py-1 font-mono text-[8px] font-bold">
+                      {formatTime(projectDuration(project))}
                     </span>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label="Yêu thích dự án"
-                    onClick={() =>
-                      setFavorite((old) =>
-                        old.includes(index)
-                          ? old.filter((item) => item !== index)
-                          : [...old, index],
-                      )
-                    }
-                    className="absolute right-1 top-1 size-7 bg-background/65"
-                  >
-                    <Star
-                      className={cn("size-3", favorite.includes(index) && "fill-brand text-brand")}
-                    />
-                  </Button>
-                </div>
-                <div className="p-2">
-                  <h3 className="truncate text-[10px] font-bold">{project.title}</h3>
-                  <p className="mt-1 text-[8px] text-muted-foreground">{project.meta}</p>
-                </div>
-              </article>
-            ))}
-          </div>
+                  </div>
+                  <div className="p-2">
+                    <h3 className="truncate text-[10px] font-bold">{project.title}</h3>
+                    <p className="mt-1 text-[8px] text-muted-foreground">
+                      {new Date(project.updatedAt).toLocaleDateString("vi-VN")} ·{" "}
+                      {project.clips.length} clip · {project.captions.length} caption
+                      {project.exportedAt ? " · đã xuất" : ""}
+                    </p>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
       </main>
 
